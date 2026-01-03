@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PPU-GIF PowerBridge (Real I/O)</title>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#12161c; --text:#e7eef8; --muted:#9fb0c5;
+    --accent:#4da3ff; --bad:#ff5d5d; --good:#3dff9e; --border:rgba(255,255,255,.08);
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;}
+  .wrap{max-width:1100px;margin:0 auto;padding:14px;display:grid;grid-template-columns:1.25fr .75fr;gap:14px;}
+  @media (max-width: 980px){ .wrap{grid-template-columns:1fr;} }
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;
+    box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
+  .card h2{margin:0;padding:12px 14px;border-bottom:1px solid var(--border);font-size:15px;letter-spacing:.2px;}
+  .card .body{padding:14px;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+  button{appearance:none;border-radius:10px;border:1px solid var(--border);
+    background:#0f1318;color:var(--text);padding:9px 11px;font-weight:700;cursor:pointer;}
+  button:hover{border-color:rgba(255,255,255,.18);}
+  button:active{transform:translateY(1px);}
+  button.primary{background:linear-gradient(180deg, rgba(77,163,255,.25), rgba(77,163,255,.12));
+    border-color:rgba(77,163,255,.35);}
+  button.good{background:linear-gradient(180deg, rgba(61,255,158,.22), rgba(61,255,158,.10));
+    border-color:rgba(61,255,158,.35);}
+  button.bad{background:linear-gradient(180deg, rgba(255,93,93,.22), rgba(255,93,93,.10));
+    border-color:rgba(255,93,93,.35);}
+  button:disabled{opacity:.45;cursor:not-allowed;}
+  input,textarea{background:#0f1318;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 10px;}
+  textarea{width:100%;min-height:70px;resize:vertical;}
+  .pill{padding:3px 8px;border-radius:999px;border:1px solid var(--border);background:#0f1318;color:var(--muted);font-size:12px;}
+  .sub{color:var(--muted);font-size:12px;}
+  .kv{display:grid;grid-template-columns: 1fr auto;gap:8px;margin-top:10px;}
+  .kv div{padding:10px;border:1px solid var(--border);border-radius:12px;background:#0f1318;}
+  .kv .k{color:var(--muted);}
+  .kv .v{text-align:right;font-variant-numeric:tabular-nums;}
+  .meter{height:14px;background:#0f1318;border:1px solid var(--border);border-radius:999px;overflow:hidden;}
+  .meter > i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--good),var(--accent));}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;touch-action:manipulation;
+    width:min(420px, 92vw); height:auto; border-radius:12px; border:1px solid var(--border); background:#000;}
+  .screenCol{display:flex;flex-direction:column;gap:10px;align-items:flex-start;}
+  .log{height:210px;overflow:auto;background:#0f1318;border:1px solid var(--border);border-radius:12px;padding:10px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:pre-wrap;}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  @media (max-width: 650px){ .grid2{grid-template-columns:1fr;} }
+  a{color:var(--accent);text-decoration:none;}
+
+  .inp{ width:84px; max-width:40vw; padding:6px 8px; border-radius:10px; border:1px solid rgba(255,255,255,.14); background:rgba(0,0,0,.25); color:var(--text); }
+  @media (max-width: 760px){ .inp{ width:72px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <h2>PPU framebuffer + PowerBridge I/O (real measurements only)</h2>
+    <div class="body">
+      <div class="grid2">
+        <div class="screenCol">
+          <canvas id="screen" width="64" height="64"></canvas>
+          <div class="sub">
+            The browser is <b>not</b> treated as “powered by the screen”.<br/>
+            The VM reads <b>measured</b> PV/touch values (IN ports) and emits control bytes (OUT ports) to your hardware link.
+          </div>
+
+          <div class="row" style="margin-top:4px">
+            <button id="btnRun" class="primary">Run</button>
+            <button id="btnStep">Step</button>
+            <button id="btnReset" class="bad">Reset</button>
+            <span class="pill" id="cartStatus">No cartridge</span>
+          </div>
+
+          <div class="row">
+            <button id="btnDemo" class="good">Load demo cartridge</button>
+            <label class="pill" style="cursor:pointer">
+              Load GIF… <input id="fileGif" type="file" accept="image/gif" style="display:none">
+            </label>
+          </div>
+
+          <div style="margin-top:10px">
+            <div class="sub">Measured power (from hardware)</div>
+            <div class="row" style="margin-top:8px">
+              <span class="pill">Normalization</span>
+              <span class="sub">Vref_mV</span><input id="vref" class="inp" inputmode="numeric" value="5000"/>
+              <span class="sub">Iref_uA</span><input id="iref" class="inp" inputmode="numeric" value="1000"/>
+            </div>
+
+            <div class="meter" title="Ebuf"><i id="batFill"></i></div>
+            <div class="kv">
+              <div class="k">Ebuf (mJ)</div><div class="v" id="ebuf">—</div>
+              <div class="k">Vpv (mV)</div><div class="v" id="vpv">—</div>
+              <div class="k">Ipv (µA)</div><div class="v" id="ipv">—</div>
+              <div class="k">Touch (Ct / ΔCt)</div><div class="v" id="ctouch">—</div>
+              <div class="k">P (nW)</div><div class="v" id="pnw">—</div>
+              <div class="k">p_norm (Q8.8)</div><div class="v" id="pnorm">—</div>
+              <div class="k">touch_norm (Q8.8)</div><div class="v" id="tnorm">—</div>
+
+              <div class="k">VM budget</div><div class="v" id="budget">—</div>
+              <div class="k">FPS</div><div class="v" id="fps">—</div>
+              <div class="k">PC</div><div class="v" id="pcShow">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="sub">Hardware link</div>
+
+          <div class="row" style="margin-top:8px">
+            <button id="btnSerial" class="good">Connect WebSerial</button>
+            <button id="btnSerialClose" class="bad" disabled>Disconnect</button>
+            <span class="pill" id="serialStatus">Serial: off</span>
+          </div>
+          <div class="sub" id="serialHint" style="margin-top:6px"></div>
+
+          <div class="row" style="margin-top:10px">
+            <input id="wsUrl" placeholder="ws://192.168.1.50:8080" style="flex:1;min-width:220px"/>
+            <button id="btnWs" class="good">Connect WebSocket</button>
+            <button id="btnWsClose" class="bad" disabled>Disconnect</button>
+            <span class="pill" id="wsStatus">WS: off</span>
+          </div>
+          <div class="sub" style="margin-top:6px">
+            WebSocket uses the same line protocol as Serial. It works on mobile browsers that don’t expose WebSerial.
+          </div>
+
+          <div class="sub" style="margin-top:12px">Manual ingest (copy/paste real readings)</div>
+          <textarea id="manualIn" spellcheck="false" placeholder="Vpv_mV=1234 Ipv_uA=560 Ebuf_mJ=9000 Ct=812 dCt=-3"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button id="btnApplyLine">Apply line(s)</button>
+            <span class="pill">Parsed → IN ports</span>
+          </div>
+
+          <div class="sub" style="margin-top:12px">Protocol</div>
+          <div class="log" style="height:auto;max-height:160px">
+IN (measurements → VM): newline-delimited key-values
+  Vpv_mV=... Ipv_uA=... Ebuf_mJ=... Ct=... dCt=...
+
+OUT (VM → hardware): emitted as key-values
+  O0=.. O1=.. ... O7=..
+
+Default OUT meaning (change in firmware if you want):
+  O0..O1 : Vset_mV (uint16 LE)
+  O2..O3 : Iset_uA (uint16 LE)
+  O4     : mux / mode
+  O5     : reserved
+  O6..O7 : user
+          </div>
+
+          <div class="sub" style="margin-top:12px">Log</div>
+          <div class="log" id="log"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>PPU-in-GIF cartridge format</h2>
+    <div class="body">
+      <div class="sub">
+        Each GIF frame is a <b>256-byte page</b> from a 16×16 grayscale tile (red channel 0–255). Multi-frame GIFs = multi-page ROM.
+      </div>
+
+      <div class="sub" style="margin-top:10px"><b>Header (first 16 bytes in page 0)</b></div>
+      <div class="log" style="height:auto;max-height:220px;margin-top:8px">
+0..3   magic "PPUG"
+4      version (1)
+5      page_count
+6      tile_w (16)
+7      tile_h (16)
+8      screen_w (64)
+9      screen_h (64)
+10..11 entry_offset (uint16, into concatenated pages)
+12     flags (reserved)
+13..15 reserved
+      </div>
+
+      <div class="sub" style="margin-top:12px"><b>VM opcodes</b></div>
+      <div class="log" style="height:auto;max-height:320px;margin-top:8px">
+0x00 NOP
+0x10 LDI   r, imm8
+0x11 ADDI  r, imm8
+0x12 MOV   rd, rs
+0x13 ADD   rd, rs
+0x14 INC   r
+0x15 CMPI  r, imm8   (sets Z)
+0x16 JNZ   addr16
+0x18 JMP   addr16
+0x19 ANDI  r, imm8
+0x20 CLS   imm8
+0x21 PSET  rx, ry, rc
+0x22 FRAME
+0x23 HALT
+0x30 IN    r, port8
+0x31 OUT   port8, r
+      </div>
+
+      <div class="sub" style="margin-top:12px">
+        Demo cartridge behavior: bright dot sweeping across X at Y=32.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/gifuct-js/dist/gifuct.min.js"></script>
+<script>
+(() => {
+  const screen = document.getElementById('screen');
+  // Touch → invariant ports (no simulation; pure coordinate normalization)
+  function packU16(off, v){
+    v = Math.max(0, Math.min(65535, v|0));
+    io_in[off] = v & 255; io_in[off+1] = (v>>>8) & 255;
+  }
+  function setTouchFromEvent(ev, down){
+    const rect = screen.getBoundingClientRect();
+    const nx = (ev.clientX - rect.left) / Math.max(1, rect.width);
+    const ny = (ev.clientY - rect.top) / Math.max(1, rect.height);
+    const x_u16 = Math.floor(Math.max(0, Math.min(1, nx)) * 65535);
+    const y_u16 = Math.floor(Math.max(0, Math.min(1, ny)) * 65535);
+    packU16(16, x_u16);
+    packU16(18, y_u16);
+    io_in[20] = down ? 1 : 0;
+  }
+  screen.addEventListener('pointerdown', (ev)=>{ setTouchFromEvent(ev, true); try{ screen.setPointerCapture(ev.pointerId); }catch{} });
+  screen.addEventListener('pointermove', (ev)=>{ if(io_in[20]) setTouchFromEvent(ev, true); });
+  screen.addEventListener('pointerup',   (ev)=>{ setTouchFromEvent(ev, false); });
+  screen.addEventListener('pointercancel',(ev)=>{ setTouchFromEvent(ev, false); });
+
+  const ctx = screen.getContext('2d', {willReadFrequently:true});
+  const img = ctx.createImageData(64,64);
+
+  const btnRun = document.getElementById('btnRun');
+  const btnStep = document.getElementById('btnStep');
+  const btnReset = document.getElementById('btnReset');
+  const btnDemo = document.getElementById('btnDemo');
+  const fileGif = document.getElementById('fileGif');
+  const cartStatus = document.getElementById('cartStatus');
+
+  const btnSerial = document.getElementById('btnSerial');
+  const btnSerialClose = document.getElementById('btnSerialClose');
+  const serialStatus = document.getElementById('serialStatus');
+  const serialHint = document.getElementById('serialHint');
+
+  const wsUrl = document.getElementById('wsUrl');
+  const btnWs = document.getElementById('btnWs');
+  const btnWsClose = document.getElementById('btnWsClose');
+  const wsStatus = document.getElementById('wsStatus');
+
+  const manualIn = document.getElementById('manualIn');
+  const btnApplyLine = document.getElementById('btnApplyLine');
+
+  const ebufEl = document.getElementById('ebuf');
+  const vpvEl = document.getElementById('vpv');
+  const ipvEl = document.getElementById('ipv');
+  const ctEl  = document.getElementById('ctouch');
+  const budgetEl = document.getElementById('budget');
+  const fpsEl = document.getElementById('fps');
+  const pcEl = document.getElementById('pcShow');
+  const batFill = document.getElementById('batFill');
+  const logEl = document.getElementById('log');
+  const vrefEl = document.getElementById('vref');
+  const irefEl = document.getElementById('iref');
+  const pNwEl = document.getElementById('pnw');
+  const pNormEl = document.getElementById('pnorm');
+  const tNormEl = document.getElementById('tnorm');
+
+
+  function log(msg){
+    const t = new Date();
+    const ts = t.toTimeString().slice(0,8);
+    logEl.textContent += `[${ts}] ${msg}
+`;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // --- framebuffer ---
+  const W=64, H=64;
+  const fb = new Uint8Array(W*H);
+  function fbFill(v){ fb.fill(v & 255); }
+  function fbPset(x,y,c){
+    x|=0; y|=0;
+    if(x<0||y<0||x>=W||y>=H) return;
+    fb[y*W+x] = c & 255;
+  }
+  function palette(v){ return [v, v, v]; }
+  function draw(){
+    const data = img.data;
+    for (let i=0;i<fb.length;i++){
+      const p = palette(fb[i]);
+      const o=i*4;
+      data[o]=p[0]; data[o+1]=p[1]; data[o+2]=p[2]; data[o+3]=255;
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  // --- PPU VM ---
+  const R = new Uint8Array(8);
+  let pc=0, Z=0, rom=new Uint8Array(0), entry=0, running=false;
+
+  const io_in  = new Uint8Array(32);
+  const io_out = new Uint8Array(8);
+
+  function resetVM(){
+    R.fill(0); pc = entry || 0; Z=0; fbFill(0);
+  }
+  function fetch8(){ return rom[pc++ & 0xFFFF] | 0; }
+  function fetch16(){ const lo=fetch8(), hi=fetch8(); return (hi<<8)|lo; }
+
+  function stepVM(maxInstr){
+    let instr=0;
+    while (instr < maxInstr){
+      const op = fetch8(); instr++;
+      switch(op){
+        case 0x00: break; // NOP
+        case 0x10:{ const r=fetch8()&7, imm=fetch8(); R[r]=imm; }break;
+        case 0x11:{ const r=fetch8()&7, imm=fetch8(); R[r]=(R[r]+imm)&0xFF; }break;
+        case 0x12:{ const rd=fetch8()&7, rs=fetch8()&7; R[rd]=R[rs]; }break;
+        case 0x13:{ const rd=fetch8()&7, rs=fetch8()&7; R[rd]=(R[rd]+R[rs])&0xFF; }break;
+        case 0x14:{ const r=fetch8()&7; R[r]=(R[r]+1)&0xFF; }break;
+        case 0x15:{ const r=fetch8()&7, imm=fetch8(); Z=(R[r]===(imm&0xFF))?1:0; }break;
+        case 0x16:{ const addr=fetch16(); if(!Z) pc=addr; }break;
+        case 0x18:{ const addr=fetch16(); pc=addr; }break;
+        case 0x19:{ const r=fetch8()&7, imm=fetch8(); R[r]=(R[r]&imm)&0xFF; }break;
+        case 0x20:{ const c=fetch8(); fbFill(c); }break;
+        case 0x21:{ const rx=fetch8()&7, ry=fetch8()&7, rc=fetch8()&7; fbPset(R[rx],R[ry],R[rc]); }break;
+        case 0x22:{ return { instr, presented:true }; }
+        case 0x23:{ running=false; log("HALT"); return { instr, presented:false }; }
+        case 0x30:{ const r=fetch8()&7, port=fetch8(); R[r] = (port < io_in.length) ? io_in[port] : 0; }break;
+        case 0x31:{ const port=fetch8(); const r=fetch8()&7; const v=R[r]; if (port < io_out.length){ io_out[port]=v; queueOut(port, v); } }break;
+        default:
+          running=false;
+          log("ERR Unknown opcode 0x" + op.toString(16).padStart(2,'0') + " at PC=" + (pc-1));
+          return { instr, presented:false };
+      }
+    }
+    return { instr, presented:false };
+  }
+
+  // --- Cartridge decode ---
+  function bytesFromRGBA(rgba, w, h){
+    const n=Math.min(256, w*h);
+    const out=new Uint8Array(256);
+    for (let i=0;i<n;i++) out[i]=rgba[i*4]; // red channel
+    return out;
+  }
+  function parseHeader(page0){
+    const magic=String.fromCharCode(page0[0],page0[1],page0[2],page0[3]);
+    if (magic!=="PPUG") throw new Error("Bad magic: " + magic);
+    const version=page0[4], pages=page0[5];
+    const tileW=page0[6], tileH=page0[7];
+    const scrW=page0[8], scrH=page0[9];
+    const entry=page0[10] | (page0[11]<<8);
+    return { version, pages, tileW, tileH, scrW, scrH, entry };
+  }
+  function loadCartridgeFromPages(pages){
+    const header=parseHeader(pages[0]);
+    if (header.entry < 16 || header.entry >= header.pages*256) throw new Error("Bad entry_offset: " + header.entry + " (must be >=16 and within ROM)");
+    if (header.version!==1) throw new Error("Unsupported version: " + header.version);
+    if (header.pages<1 || header.pages>64) throw new Error("Invalid page_count: " + header.pages);
+    if (pages.length < header.pages) throw new Error("GIF has " + pages.length + " frame(s) but header.page_count=" + header.pages);
+    const concat=new Uint8Array(header.pages*256);
+    for (let i=0;i<header.pages;i++) concat.set(pages[i], i*256);
+    rom=concat; entry=header.entry; resetVM();
+    cartStatus.textContent = `Cartridge OK (pages=${header.pages}, entry=${entry})`;
+    cartStatus.style.color = "var(--good)";
+    log(`OK  Loaded cartridge: pages=${header.pages}, entry=${entry} bytes=${rom.length}`);
+  }
+
+  async function decodeGifArrayBuffer(buf){
+    if (window.parseGIF && window.decompressFrames){
+      const gif = window.parseGIF(new Uint8Array(buf));
+      const frames = window.decompressFrames(gif, true);
+      if(!frames || !frames.length) throw new Error("No frames decoded.");
+      return frames.map(f => bytesFromRGBA(f.patch, gif.lsd.width, gif.lsd.height));
+    }
+    // fallback: first frame only
+    const blob=new Blob([buf], {type:"image/gif"});
+    const url=URL.createObjectURL(blob);
+    try{
+      const img=await new Promise((res,rej)=>{
+        const im=new Image();
+        im.onload=()=>res(im);
+        im.onerror=()=>rej(new Error("Image decode failed."));
+        im.src=url;
+      });
+      const c=document.createElement("canvas");
+      c.width=img.width; c.height=img.height;
+      const x=c.getContext("2d",{willReadFrequently:true});
+      x.drawImage(img,0,0);
+      const id=x.getImageData(0,0,c.width,c.height);
+      return [bytesFromRGBA(id.data, c.width, c.height)];
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  async function loadGifFromFile(file){
+    const buf=await file.arrayBuffer();
+    const pages=await decodeGifArrayBuffer(buf);
+    loadCartridgeFromPages(pages);
+  }
+
+  async function loadDemo(){
+    const demoUri="data:image/gif;base64,R0lGODlhEAAQAIIAAAAAABISEiIiIkFBQVFRUTAwMP///wAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAEAAQAEAIPwAJCBwAAECAAAMGBCjIsKHDhxAjSpy40KAAgwUAXCxYcaLHjyA1AshoEICBiihNLlyo8KKAgyFjypxJsyaAgAA7";
+    const resp=await fetch(demoUri);
+    const buf=await resp.arrayBuffer();
+    const pages=await decodeGifArrayBuffer(buf);
+    loadCartridgeFromPages(pages);
+  }
+
+  // --- Measurement ingestion (shared) ---
+  function clampU16(x){ x|=0; return x<0?0:(x>65535?65535:x); }
+  let lastKV = {};
+  function applyMeasurements(kv){
+    lastKV = {...lastKV, ...kv};
+
+    const Vpv_mV = (kv.Vpv_mV!=null) ? kv.Vpv_mV : null;
+    const Ipv_uA = (kv.Ipv_uA!=null) ? kv.Ipv_uA : null;
+    const Ebuf_mJ= (kv.Ebuf_mJ!=null)? kv.Ebuf_mJ: null;
+    const Ct     = (kv.Ct!=null)     ? kv.Ct     : null;
+    const dCt    = (kv.dCt!=null)    ? kv.dCt    : null;
+
+    // Raw pack (fixed mapping)
+    if(Vpv_mV!=null){
+      const v=clampU16(Vpv_mV);
+      io_in[0]=v & 255; io_in[1]=(v>>8)&255;
+      vpvEl.textContent = v.toString();
+    }
+    if(Ipv_uA!=null){
+      const i=clampU16(Ipv_uA);
+      io_in[2]=i & 255; io_in[3]=(i>>8)&255;
+      ipvEl.textContent = i.toString();
+    }
+    if(Ebuf_mJ!=null){
+      const e=clampU16(Ebuf_mJ);
+      io_in[4]=e & 255; io_in[5]=(e>>8)&255;
+      ebufEl.textContent = e.toString();
+      const pct = Math.max(0, Math.min(1, e/10000)); // display-only scaling
+      batFill.style.width = (pct*100).toFixed(1) + "%";
+    }
+    if(Ct!=null || dCt!=null){
+      if(Ct!=null) io_in[6] = Ct & 255;
+      if(dCt!=null) io_in[7] = (dCt & 255);
+      const CtShow = (Ct!=null) ? Ct.toString() : "—";
+      const dCtShow= (dCt!=null)? dCt.toString(): "—";
+      ctEl.textContent = `${CtShow} / ${dCtShow}`;
+    }
+
+    // --- Invariant feature layer (dimensionless, device-independent) ---
+    const Vref_mV = clampU16(parseInt((vrefEl && vrefEl.value) || "5000", 10));
+    const Iref_uA = clampU16(parseInt((irefEl && irefEl.value) || "1000", 10));
+
+    let P_nW = null;            // uint32: Vpv_mV * Ipv_uA   (mV*uA = nW)
+    let p_norm_Q8_8 = null;     // uint16: (P_nW / (Vref*Iref)) * 256
+    let touch_norm_Q8_8 = null; // int16 : (dCt/Ct) * 256
+
+    if(Vpv_mV!=null && Ipv_uA!=null){
+      const v=clampU16(Vpv_mV), i=clampU16(Ipv_uA);
+      P_nW = (v * i) >>> 0;
+      const Pref_nW = Math.max(1, (Vref_mV * Iref_uA) >>> 0);
+      p_norm_Q8_8 = Math.min(65535, Math.floor((P_nW * 256) / Pref_nW));
+    }
+    if(Ct!=null && dCt!=null){
+      const ct = Math.max(1, (Ct|0));
+      touch_norm_Q8_8 = Math.max(-32768, Math.min(32767, Math.trunc((dCt * 256) / ct)));
+    }
+
+    // Pack invariant ports (byte-level):
+    // 8..11  P_nW (uint32 LE)
+    // 12..13 p_norm_Q8.8 (uint16 LE)
+    // 14..15 touch_norm_Q8.8 (int16 LE, two's complement)
+    if(P_nW!=null){
+      io_in[8] = P_nW & 255;
+      io_in[9] = (P_nW>>>8) & 255;
+      io_in[10]= (P_nW>>>16) & 255;
+      io_in[11]= (P_nW>>>24) & 255;
+      if(pNwEl) pNwEl.textContent = P_nW.toString();
+    }
+    if(p_norm_Q8_8!=null){
+      io_in[12]= p_norm_Q8_8 & 255;
+      io_in[13]= (p_norm_Q8_8>>>8) & 255;
+      if(pNormEl) pNormEl.textContent = p_norm_Q8_8.toString();
+    }
+    if(touch_norm_Q8_8!=null){
+      const tn = (touch_norm_Q8_8 & 0xFFFF);
+      io_in[14]= tn & 255;
+      io_in[15]= (tn>>>8) & 255;
+      if(tNormEl) tNormEl.textContent = touch_norm_Q8_8.toString();
+    }
+  }
+
+  function parseLine(line){
+    const parts=line.trim().split(/\s+/);
+    const kv={};
+    for(const p of parts){
+      const m=p.match(/^([A-Za-z0-9_]+)=(-?\d+)$/);
+      if(m) kv[m[1]]=parseInt(m[2],10);
+    }
+    if(Object.keys(kv).length) applyMeasurements(kv);
+  }
+
+  function parseLines(text){
+    const lines = text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    for (const line of lines) parseLine(line);
+  }
+
+  // --- OUT forwarding (Serial + WS) ---
+  let outQueue=[];
+  function queueOut(portIdx, value){ outQueue.push({portIdx, value}); }
+
+  // WebSerial
+  let port=null, reader=null, writer=null, readLoopCancel=false;
+
+  function setSerialStatus(on, msg){
+    serialStatus.textContent = msg;
+    serialStatus.style.color = on ? "var(--good)" : "var(--muted)";
+    btnSerialClose.disabled = !on;
+  }
+
+  async function connectSerial(){
+    if(!("serial" in navigator)){
+      log("ERR WebSerial not available here. Use WebSocket or manual ingest.");
+      return;
+    }
+    try{
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      writer = port.writable.getWriter();
+      reader = port.readable.getReader();
+      readLoopCancel = false;
+      setSerialStatus(true, "Serial: on");
+      log("OK  Serial connected.");
+
+      (async ()=>{
+        const dec = new TextDecoder();
+        let buf="";
+        while(!readLoopCancel){
+          const {value, done} = await reader.read();
+          if(done) break;
+          buf += dec.decode(value, {stream:true});
+          let idx;
+          while((idx = buf.indexOf("\n")) >= 0){
+            const line = buf.slice(0, idx);
+            buf = buf.slice(idx+1);
+            if(line.trim()) parseLine(line);
+          }
+        }
+      })().catch(e=>log("ERR Serial read loop: " + e.message));
+    }catch(e){
+      log("ERR Serial connect failed: " + e.message);
+      await disconnectSerial();
+    }
+  }
+
+  async function disconnectSerial(){
+    try{ readLoopCancel=true; }catch(_){}
+    try{ if(reader){ await reader.cancel(); reader.releaseLock(); } }catch(_){}
+    try{ if(writer){ writer.releaseLock(); } }catch(_){}
+    try{ if(port){ await port.close(); } }catch(_){}
+    port=null; reader=null; writer=null;
+    setSerialStatus(false, "Serial: off");
+    log("Serial disconnected.");
+  }
+
+  async function writeSerial(msg){
+    if(!writer) return;
+    try{
+      await writer.write(new TextEncoder().encode(msg));
+    }catch(e){
+      log("ERR Serial write failed: " + e.message);
+    }
+  }
+
+  // WebSocket
+  let ws=null;
+
+  function setWsStatus(on, msg){
+    wsStatus.textContent = msg;
+    wsStatus.style.color = on ? "var(--good)" : "var(--muted)";
+    btnWsClose.disabled = !on;
+  }
+
+  function connectWs(){
+    const url = (wsUrl.value || "").trim();
+    if(!url) return log("WRN Enter a ws:// or wss:// URL.");
+    try{
+      ws = new WebSocket(url);
+      ws.onopen = ()=>{ setWsStatus(true, "WS: on"); log("OK  WebSocket connected."); };
+      ws.onclose = ()=>{ setWsStatus(false, "WS: off"); log("WebSocket disconnected."); ws=null; };
+      ws.onerror = ()=>{ log("ERR WebSocket error."); };
+      let buf="";
+      ws.onmessage = (ev)=>{
+        const text = typeof ev.data === "string" ? ev.data : "";
+        buf += text;
+        let idx;
+        while((idx = buf.indexOf("\n")) >= 0){
+          const line = buf.slice(0, idx);
+          buf = buf.slice(idx+1);
+          if(line.trim()) parseLine(line);
+        }
+      };
+    }catch(e){
+      log("ERR WS connect failed: " + e.message);
+      ws=null;
+    }
+  }
+
+  function disconnectWs(){
+    try{ if(ws) ws.close(); }catch(_){}
+  }
+
+  function writeWs(msg){
+    if(!ws || ws.readyState !== 1) return;
+    try{ ws.send(msg); }catch(_){}
+  }
+
+  async function flushOut(){
+    if(!outQueue.length) return;
+    const last = new Map();
+    for(const it of outQueue) last.set(it.portIdx, it.value);
+    outQueue = [];
+    let msg = "";
+    for(const [p,v] of last.entries()) msg += `O${p}=${v} `;
+    msg = msg.trim() + "\n";
+    if(writer) await writeSerial(msg);
+    if(ws && ws.readyState===1) writeWs(msg);
+  }
+
+  // --- Controls ---
+  
+  function recomputeInvariants(){
+    if(Object.keys(lastKV).length) applyMeasurements(lastKV);
+  }
+  if(vrefEl) vrefEl.addEventListener('input', recomputeInvariants);
+  if(irefEl) irefEl.addEventListener('input', recomputeInvariants);
+
+btnRun.addEventListener("click", ()=>{
+    if(!rom.length){ log("WRN No cartridge loaded."); return; }
+    running=!running;
+    btnRun.textContent = running ? "Pause" : "Run";
+    log(running ? "RUN" : "PAUSE");
+  });
+
+  btnStep.addEventListener("click", ()=>{
+    if(!rom.length) return log("WRN No cartridge loaded.");
+    const res=stepVM(16000);
+    draw();
+    log("STEP: instr=" + res.instr + (res.presented ? " (FRAME)" : ""));
+  });
+
+  btnReset.addEventListener("click", ()=>{
+    if(!rom.length) return;
+    resetVM(); draw(); log("RESET");
+  });
+
+  btnDemo.addEventListener("click", async ()=>{
+    try{ await loadDemo(); draw(); }
+    catch(e){ log("ERR Demo load failed: " + e.message); }
+  });
+
+  fileGif.addEventListener("change", async (ev)=>{
+    const f=ev.target.files && ev.target.files[0];
+    if(!f) return;
+    try{ await loadGifFromFile(f); draw(); }
+    catch(e){ log("ERR Load failed: " + e.message); }
+    finally{ ev.target.value=""; }
+  });
+
+  btnSerial.addEventListener("click", connectSerial);
+  btnSerialClose.addEventListener("click", disconnectSerial);
+
+  btnWs.addEventListener("click", connectWs);
+  btnWsClose.addEventListener("click", disconnectWs);
+
+  btnApplyLine.addEventListener("click", ()=>{
+    parseLines(manualIn.value || "");
+    log("OK  Applied manual line(s).");
+  });
+
+  if(!("serial" in navigator)){
+    serialHint.textContent = "This browser does not expose WebSerial. Use WebSocket or manual ingest.";
+  } else {
+    serialHint.textContent = "WebSerial works in secure contexts (https/localhost) on supported browsers.";
+  }
+
+  // --- Main loop ---
+  let lastT = performance.now();
+  let fpsSmooth = 0;
+  function tick(now){
+    const dt = Math.min(0.05, (now - lastT)/1000);
+    lastT = now;
+
+    const Ebuf = (io_in[4] | (io_in[5]<<8)) | 0;
+    const budget = Ebuf ? Math.floor(600 + (Ebuf/10000)*5200) : 1200;
+    budgetEl.textContent = budget.toString() + " instr/tick";
+    pcEl.textContent = rom.length ? pc.toString() : "—";
+
+    let presented=false;
+    if(running && rom.length){
+      const res=stepVM(budget);
+      presented = !!res.presented;
+    }
+    if(presented) draw();
+
+    flushOut();
+
+    const instFps = 1/Math.max(1e-6, dt);
+    fpsSmooth = fpsSmooth ? (fpsSmooth*0.9 + instFps*0.1) : instFps;
+    fpsEl.textContent = fpsSmooth.toFixed(1);
+
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // init
+  fbFill(0); draw();
+  cartStatus.textContent = "No cartridge (load demo)";
+  cartStatus.style.color = "var(--muted)";
+  log("Ready. Load a cartridge. Connect Serial/WS or paste real readings.");
+})();
+</script>
+</body>
+</html>
